@@ -41,8 +41,12 @@ struct Query;
 
 
 // ** TASK 2.1 **
-// typedef enum { ... list of states ... } QueryState;
-// XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+typedef enum {
+	Q_WAIT_JITTER,		// Waiting for jitter timer before forwarding Query (Task 2.4)
+	Q_WAIT_HIT,			// Query forwarded, waiting for a Hit message (Task 2.2)
+	Q_WAIT_CLEAR,		// Hit sent to IPv6 client, waiting 10s to clear GUI entry (Task 2.3)
+	Q_WAIT_CONNECTION	// Hit sent to IPv4 client, waiting for TCP proxy connection (Task 3.2)
+} QueryState;
 
 // Query information
 typedef struct Query {
@@ -62,11 +66,12 @@ typedef struct Query {
 
   // State information
     // ** TASK 2.1 **
-    // QueryState 		state;		// Query state
+    QueryState 		state;		// Query state
     thread_state   *thread;
 
     // Add any additional field you want!
-    // modify the constructor function (new_Query)!
+    char			qbuf[MSG_BUFFER_SIZE];
+    int				qbuflen;
 
     struct Query   *self_;
 } Query;

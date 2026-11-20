@@ -63,7 +63,8 @@ Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in
 	pt->seq = seq;
 	pt->thread = NULL;
     // ** TASK 2.1 **
-	// pt->state = ...
+	pt->state = Q_WAIT_HIT;
+
 	pt->is_ipv6 = is_ipv6;
 	pt->timer_id= 0;
 	// Define the query Id - for logging purposes
@@ -135,7 +136,7 @@ void free_query_in_Querylist(Query *q, gboolean called_from_GUI) {
 
     // ** TASK 2.2 **
 	// Stop timer if it is active
-	// ...
+	stop_query_timer(q);
 
 	q->self_ = NULL;	// It is being freed
 
@@ -213,24 +214,30 @@ gboolean callback_query_timeout(gpointer data) {
 #endif
 
 	// ** TASK 2.2 ** // ** TASK 2.3 ** // ** TASK 3.2 **
-	// Put here what you should do when the timer ends!
+	q->timer_id = 0;
 
-	// It should depend on the query state
+	switch (q->state) {
+		case Q_WAIT_HIT:
+			Log("Query timeout waiting for Hit - removing query\n");
+			free_query_in_Querylist(q, FALSE);
+			break;
 
-	// If you are running a jitter timer before transmitting the Query, you should send the Query
-	//  using send_multicast. The jitter value should be set to
-	//			long int jitter_time = (long) floor(1.0 * random() / RAND_MAX * QUERY_JITTER);
+		case Q_WAIT_CLEAR:
+			free_query_in_Querylist(q, FALSE);
+			break;
 
-	// If you are waiting for a Hit, cancel the pending Query
+		case Q_WAIT_JITTER:
+			send_multicast(q->qbuf, q->qbuflen, !q->is_ipv6);
+			q->state = Q_WAIT_HIT;
+			start_query_timer(q, QUERY_TIMEOUT);
+			break;
 
-	// If you are waiting for a connection, cancel the pending Query
+		default:
+			fprintf(stderr, "Unexpected state in callback_query_timeout: %d\n", q->state);
+			break;
+	}
 
-	// Otherwise, it is a mistake
-
-	q->timer_id= 0;
-	return FALSE;  // stop timer
-
-	return FALSE;  // stop timer
+	return FALSE; // stop timer
 }
 
 // Handle the reception of a Query packet
@@ -274,7 +281,12 @@ void handle_Query(char *buf, int buflen, gboolean is_ipv6,
 	}
 
 	// Check if the query has appeared in the !is_ipv6 domain - if it has, ignore it because someone else send it before.
-	if (locate_qid_in_Querylist_by_IPv(fname, seq, !is_ipv6) != NULL) {
+	Query *other = locate_qid_in_Querylist_by_IPv(fname, seq, !is_ipv6);
+	if (other != NULL) {
+		if (other->state == Q_WAIT_JITTER) {
+			Log("Duplicate Query detected from other gateway - cancelling jitter timer\n");
+			free_query_in_Querylist(other, FALSE);
+		}
 		return;
 	}
 
@@ -287,12 +299,12 @@ void handle_Query(char *buf, int buflen, gboolean is_ipv6,
 	// Store the query information in the GUI table list
 	GUI_add_Query(fname, seq, is_ipv6, strdup(tmp_ip), port);
 
-	// (TASK x) Start by forwarding the Query message to the other domain (i.e. !is_ipv6) using:
-	send_multicast(buf, buflen, !is_ipv6);
-	//
-	// At TASK x, if you have time, replace with starting a jitter timer, which will send the Query later!
-	//	This helps when there are more than one gateway is connecting two multicast groups!
-	// ... start_query_timer(pt, jitter_time);
+	// (TASK 2.4) Start a jitter timer before forwarding the Query to !is_ipv6
+	memcpy(pt->qbuf, buf, buflen);
+	pt->qbuflen = buflen;
+	pt->state = Q_WAIT_JITTER;
+	long int jitter_time = (long) floor(1.0 * random() / RAND_MAX * QUERY_JITTER);
+	start_query_timer(pt, jitter_time);
 }
 
 // Handle the reception of an Hit packet
@@ -377,7 +389,9 @@ void handle_Hit(char *buf, int buflen, struct in6_addr *ip, u_short port,
 		//		GUI_del_Query(fname, seq, !is_ipv6, FALSE);
 		//
 		// Start the timer and wait for timeout to clear the GUI entry
-		// ...
+		stop_query_timer(q);
+		q->state = Q_WAIT_CLEAR;
+		start_query_timer(q, QUERY_TIMEOUT);
 
 #ifdef DEBUG
 //		sprintf(tmp_buf,
@@ -519,6 +533,7 @@ void on_togglebuttonActive_toggled(GtkToggleButton *togglebutton,
 		}
 		//set_PortTCP(port_TCP);
 		set_PID(getpid());
+		srandom(time(NULL));
 		//
 		block_entrys(TRUE);
 		active = TRUE;
@@ -542,4 +557,3 @@ gboolean on_window1_delete_event(GtkWidget * widget, GdkEvent * event,
 	gtk_main_quit();	// Close Gtk main cycle
 	return FALSE;// Must always return FALSE; otherwise the window is not closed.
 }
-
