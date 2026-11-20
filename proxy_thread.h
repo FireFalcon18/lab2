@@ -18,7 +18,13 @@
 
 // ** TASK 3.3 **
 // Status values of a proxy thread
-// typedef enum {  ... } thread_status;
+typedef enum {
+	TH_INIT,
+	TH_CONNECTED,
+	TH_TRANSFERRING,
+	TH_FINISHED,
+	TH_ERROR
+} thread_status;
 
 
 // Thread state
@@ -36,7 +42,7 @@ typedef struct thread_state {
 
 // you can add more elements to this structure if you need ...
 	// ** TASK 3.3 **
-	// thread_status status;	// Status of the thread
+	thread_status status;	// Status of the thread
 
 	struct thread_state *self;	// wealth checking self-pointer
 } thread_state;

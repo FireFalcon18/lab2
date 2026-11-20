@@ -72,6 +72,7 @@ typedef struct Query {
     // Add any additional field you want!
     char			qbuf[MSG_BUFFER_SIZE];
     int				qbuflen;
+    gboolean		hit_received;
 
     struct Query   *self_;
 } Query;

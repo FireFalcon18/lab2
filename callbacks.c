@@ -62,6 +62,7 @@ Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in
 	strncpy(pt->name, filename, sizeof(pt->name)-1);
 	pt->seq = seq;
 	pt->thread = NULL;
+	pt->hit_received = FALSE;
     // ** TASK 2.1 **
 	pt->state = Q_WAIT_HIT;
 
@@ -148,7 +149,12 @@ void free_query_in_Querylist(Query *q, gboolean called_from_GUI) {
 	pthread_mutex_unlock(&mutex4);
 
 	// Stop thread if it is active
-	// ...
+	if (q->thread != NULL) {
+		thread_state *t = q->thread;
+		q->thread = NULL;
+		t->q = NULL;
+		stop_thread_by_id(t);
+	}
 
 	free(q);
 }
@@ -230,6 +236,12 @@ gboolean callback_query_timeout(gpointer data) {
 			send_multicast(q->qbuf, q->qbuflen, !q->is_ipv6);
 			q->state = Q_WAIT_HIT;
 			start_query_timer(q, QUERY_TIMEOUT);
+			break;
+			
+		case Q_WAIT_CONNECTION:
+			Log("Query timeout waiting for TCP connection - removing query\n");
+			GUI_del_Proxy(q->name, q->seq, -1, FALSE);
+			free_query_in_Querylist(q, FALSE);
 			break;
 
 		default:
@@ -409,12 +421,15 @@ void handle_Hit(char *buf, int buflen, struct in6_addr *ip, u_short port,
 	// ** PHASE 3 - TASK 3.1 + 3.2 ** - updated version with timer support
 
 	// Test if an HIT was previously received and a thread is already active
-	// ...
+	if (q->hit_received || (q->thread != NULL)) {
+		return;
+	}
+	q->hit_received = TRUE;
 
-	// ... update_HIT_info(q, fhash, flen);	// Update Query/Hit table in the GUI
+	update_HIT_info(q, flen, fhash);	// Update Query/Hit table in the GUI
 
 	// Add the proxy information to the GUI, just to inform that you are expecting a connection using
-	// ... GUI_add_Proxy(filename, seq);
+	GUI_add_Proxy(q->name, q->seq);
 	// where filename and seq are stored in the Query structure
 	// The proxy thread will only be created when a new TCP connection is received
 
@@ -424,17 +439,19 @@ void handle_Hit(char *buf, int buflen, struct in6_addr *ip, u_short port,
 
 
 	// Prepare a new HIT message with the proxy information and send it to the client.
-	// Use  write_hit_message(...) and
-	//		send_message4(&client_ipv4_address, client_port, HIT_buffer, HIT_buflen)
-	// where client_ipv4_address and client_port should be in the Query structure
-	// Remember that you need to send a valid IPv4 address to the IPv4 fileexchange, identifying
-	//  the gateway TCP port, and later, when you receive the TCP communication, this
-	//  thread will be associated with the Query.
-	// The local IPv4 address is available through "sock.h" in variable local_ipv4
-	// ...
+	if (!write_hit_message(hbuf, &hlen, seq, fname, flen, fhash, portTCP, FALSE, NULL, &local_ipv4)) {
+		Log("Error writing IPv4 Hit message\n");
+		return;
+	}
+	if (!send_message4(&q->ipv4, q->port, hbuf, hlen)) {
+		Log("Error sending Hit message to IPv4 client\n");
+		return;
+	}
 
 	// Start the timer, to wait for up to QUERY_TIMEOUT microseconds for a connection
-	// ...
+	stop_query_timer(q);
+	q->state = Q_WAIT_CONNECTION;
+	start_query_timer(q, HIT_CONNECTION_TIMEOUT);
 
 #ifdef DEBUG
 //	sprintf(tmp_buf,

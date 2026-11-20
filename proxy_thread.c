@@ -47,6 +47,7 @@ thread_state *new_thread_state(int sock4, struct sockaddr_in6 *cli_addr) {
 	pt->filename = NULL;
 	pt->seq= -1;
 	pt->q= NULL;
+	pt->status = TH_INIT;
 
 	pt->self = pt;
 	pthread_mutex_lock(&mutex5);
@@ -276,6 +277,23 @@ gboolean update_transf(thread_state *pt, int transf) {
 	return TRUE;
 }
 
+// Configure socket timeouts and buffer sizes (TASK 3.4)
+static void configure_tcp_socket(int sock) {
+	if (sock < 0)
+		return;
+
+	struct timeval tv;
+	tv.tv_sec = 10;
+	tv.tv_usec = 0;
+	if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+		perror("setsockopt SO_RCVTIMEO");
+	}
+
+	int bufsize = 262144; // 256 KB
+	setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+	setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
+}
+
 // Function that implements the thread function:
 //		it implements all communications between client IPv4 and server IPv6
 //		ptr - pointer to the thread state object
@@ -305,7 +323,7 @@ void *proxy_function(void *ptr) {
 	sprintf(conn_str, "th(%d): ", pt->sock4);
 
 	// Set timeout for reading from socket IPv4
-	//  ...
+	configure_tcp_socket(pt->sock4);
 
 	//////// Read the request from the filexchange on IPv4 ///////
 	// Read seq
@@ -325,7 +343,7 @@ void *proxy_function(void *ptr) {
 		pthread_exit(NULL);
 	}
 	// validate the filename length
-	if (namelen > 256) {
+	if ((namelen <= 0) || (namelen > 256)) {
 		sprintf(write_buf, "%sInvalid filename's length (%d)\n", conn_str, namelen);
 		Log(write_buf);
 		close_sock4(pt, FALSE);
@@ -333,48 +351,104 @@ void *proxy_function(void *ptr) {
 		pthread_exit(NULL);
 	}
 
-	Log("proxy_function not implemented yet\n");
-
 	// ** TASK 3.3 **
 
 	// Read the filename
-	// ...
+	char filename[257];
+	int rlen = 0;
+	while (rlen < namelen) {
+		int r = read(pt->sock4, filename + rlen, namelen - rlen);
+		if (r <= 0) {
+			sprintf(write_buf, "%sFailed reading filename\n", conn_str);
+			Log(write_buf);
+			free_thread_state(pt, FALSE);
+			pthread_exit(NULL);
+		}
+		rlen += r;
+	}
+	filename[namelen] = '\0';
 	// (do not forget to use a buffer to receive the filename)
 
 	// Update Proxy client information in the GUI
-	// use GUI_update_cli_details_Proxy(filename, seq, pt->sock4, addr_ipv6(&pt->cli_ip), pt->cli_port);
+	GUI_update_cli_details_Proxy(filename, seq, pt->sock4, addr_ipv6(&pt->cli_ip), pt->cli_port);
 
 	// Locate the Query state associated with the connection
-	// q= locate_in_QueryList_IP(filename, seq, FALSE);
-	// and update the state on both structures to store the association query-thread
-	//		in fields 	q->thread, pt->q
+	q = locate_qid_in_Querylist_by_IPv(filename, seq, FALSE);
+	if (q == NULL) {
+		sprintf(write_buf, "%sQuery not found for '%s'(%u)\n", conn_str, filename, seq);
+		Log(write_buf);
+		close_sock4(pt, TRUE);
+		free_thread_state(pt, FALSE);
+		pthread_exit(NULL);
+	}
+	stop_query_timer(q);
+	q->thread = pt;
+	pt->q = q;
 
 	// Connect to fileexchange on IPv6, creating socket pt->sock6.
-	// use
-	// pt->sock6 = connect_to_file_server(pt, filename, seq);
+	pt->sock6 = connect_to_file_server(pt, filename, seq);
+	if (pt->sock6 < 0) {
+		sprintf(write_buf, "%sFailed connecting to IPv6 server for '%s'\n", conn_str, filename);
+		Log(write_buf);
+		pt->status = TH_ERROR;
+		close_sock4(pt, TRUE);
+		free_thread_state(pt, FALSE);
+		pthread_exit(NULL);
+	}
+	pt->status = TH_CONNECTED;
 
 	// ## part of TASK 10 ##
 	// Configure your socket IPv4 to define a timeout time for reading operations and
 	// to set buffers or other any configuration that maximizes throughput
 	//	e.g. SO_SNDBUF, SO_RECVBUF, timeout, etc.
-	// ???
+	configure_tcp_socket(pt->sock6);
 
 
 	// Update state in thread state list
 	// update_thread_state(pt, pt->sock6, buf, seq);
+	update_thread_state(pt, pt->sock6, filename, seq);
 
 
 	// Send the request to the IPv6 filexchange
-	// ...
+	if ((write(pt->sock6, &seq, sizeof(seq)) != sizeof(seq)) ||
+		(write(pt->sock6, &namelen, sizeof(namelen)) != sizeof(namelen)) ||
+		(write(pt->sock6, filename, namelen) != namelen)) {
+		sprintf(write_buf, "%sFailed sending request to IPv6 server\n", conn_str);
+		Log(write_buf);
+		pt->status = TH_ERROR;
+		close_sock4(pt, TRUE);
+		free_thread_state(pt, FALSE);
+		pthread_exit(NULL);
+	}
 
 	// Receive the file length from the IPv6 server
-	// ...
+	long long flen = 0;
+	if (read(pt->sock6, &flen, sizeof(flen)) != sizeof(flen)) {
+		sprintf(write_buf, "%sFailed reading file length from IPv6 server\n", conn_str);
+		Log(write_buf);
+		pt->status = TH_ERROR;
+		close_sock4(pt, TRUE);
+		free_thread_state(pt, FALSE);
+		pthread_exit(NULL);
+	}
 
 	// Send the length to the IPv4 filexchange
-	// ...
+	if (write(pt->sock4, &flen, sizeof(flen)) != sizeof(flen)) {
+		sprintf(write_buf, "%sFailed sending file length to IPv4 client\n", conn_str);
+		Log(write_buf);
+		pt->status = TH_ERROR;
+		free_thread_state(pt, FALSE);
+		pthread_exit(NULL);
+	}
 
 	// Test if the file is empty
-	// ...
+	if (flen <= 0) {
+		sprintf(write_buf, "%sEmpty or unavailable file (len=%lld)\n", conn_str, flen);
+		Log(write_buf);
+		pt->status = (flen == 0) ? TH_FINISHED : TH_ERROR;
+		free_thread_state(pt, FALSE);
+		pthread_exit(NULL);
+	}
 
 
  	// get the starting time
@@ -383,28 +457,56 @@ void *proxy_function(void *ptr) {
 
 
 	// Receive the file from the server and forward it to the client
-/* Proposed skeleton for the code:
-	... initialize variables ...
+	char data_buf[FILE_BUFLEN];
+	long long total_sent = 0;
+	int last_perc = -1;
+	pt->status = TH_TRANSFERRING;
 
 	do {
 		// Loop forever until end of file or socket error
 		// read the file from the socket IPv6 to send to the socket IPv4
 		// READ and ADAPT the code in Section 2.1.9 "Read and write binary files"
-		n = read(...);
+		long long remaining = flen - total_sent;
+		size_t to_read = (remaining < FILE_BUFLEN) ? (size_t) remaining : FILE_BUFLEN;
+		int n = read(pt->sock6, data_buf, to_read);
 		if (n > 0) {
-			m = write(...);
+			int written = 0;
+			while (written < n) {
+				int m = write(pt->sock4, data_buf + written, n - written);
+				if (m <= 0) {
+					sprintf(write_buf, "%sWrite error to IPv4 client\n", conn_str);
+					Log(write_buf);
+					pt->status = TH_ERROR;
+					break;
+				}
+				written += m;
+			}
+			if (written < n)
+				break;
 
-			... calculate diff - the percentage of the file received
-			diff= ...
-
-			// Update the transmission % on the GUI
-			update_transf(pt, diff);
+			total_sent += n;
+			// calculate diff - the percentage of the file received
+			diff = (long) ((total_sent * 100) / flen);
+			if (diff != last_perc) {
+				last_perc = (int) diff;
+				// Update the transmission % on the GUI
+				update_transf(pt, (int) diff);
+			}
+		} else {
+			sprintf(write_buf, "%sRead error or premature EOF from IPv6 server\n", conn_str);
+			Log(write_buf);
+			pt->status = TH_ERROR;
+			break;
 		}
 
 		if (slow) // Make the transmission slow - to facilitate debug
 			usleep(SLOW_SLEEPTIME);
-	} while (active && ...);
-*/
+	} while (active && (pt->self == pt) && (total_sent < flen));
+
+	if (total_sent == flen) {
+		pt->status = TH_FINISHED;
+	}
+
 	// Get the ending time
 	if (gettimeofday(&tv2, &tz)) {
 		g_print("%sError getting time\n", conn_str);
