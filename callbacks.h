@@ -56,6 +56,9 @@ typedef struct Query {
     gboolean		is_ipv6;	// Sender domain
     // ** TASK 1.2 **
     // ... add ipv6/ipv4 addresses and port number ...
+    struct in6_addr ipv6;
+    struct in_addr  ipv4;
+    u_short         port;
 
   // State information
     // ** TASK 2.1 **
@@ -86,7 +89,8 @@ extern WindowElements *main_window;
 
 // Create a Query descriptor and put it in qlist - add parameters to store the QUERY's IP and port number
 // ** TASK 1.2 **
-Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6 /*, ...*/);
+Query *new_Query(const char *filename, uint32_t seq, gboolean is_ipv6, struct in6_addr *ipv6, struct in_addr *ipv4, u_short port);
+
 // Search for Query descriptor in qlist
 Query *locate_qid_in_Querylist(const char *filename, uint32_t seq);
 Query *locate_qid_in_Querylist_by_IPv(const char *filename, uint32_t seq, gboolean is_ipv6);
